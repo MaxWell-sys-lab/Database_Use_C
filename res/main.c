@@ -14,6 +14,95 @@ typedef struct
 } InputBuffer;
 
 /**
+ * 元命令执行结果
+ */
+typedef enum
+{
+    META_COMMAND_SUCCESS,            // 元命令执行成功
+    META_COMMAND_UNRECOGNIZED_COMMAND // 未识别的元命令
+} MetaCommandResult;
+
+/**
+ * 语句识别结果
+ */
+typedef enum
+{
+    PREPARE_SUCCESS,                // 准备成功
+    PREPARE_UNRECOGNIZED_STATEMENT  // 未识别的语句
+} PrepareResult;
+
+/**
+ * 语句类型
+ */
+typedef enum
+{
+    STATEMENT_INSERT,               // 插入语句
+    STATEMENT_SELECT                // 查询语句
+} StatementType;
+
+/**
+ * 语句
+ */
+typedef struct
+{
+    StatementType type;             // 语句类型
+} Statement;
+
+/**
+ * 语句处理
+ */
+MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+{
+    if(strcmp(input_buffer->buffer, ".exit") == 0)
+    {
+        exit(EXIT_SUCCESS);
+    }
+    else
+    {
+        return META_COMMAND_UNRECOGNIZED_COMMAND;
+    }
+}
+
+/**
+ * 准备语句
+ * @param input_buffer 输入缓冲区
+ * @param statement 语句
+ * @return 语句识别结果
+ */
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
+{
+    if(strncmp(input_buffer->buffer, "insert", 6) == 0) // 因为insert语句会包含其他字符，所以只需要比较前6个字符
+    {
+        statement->type = STATEMENT_INSERT;
+        return PREPARE_SUCCESS;
+    }
+    if(strcmp(input_buffer->buffer, "select") == 0)
+    {
+        statement->type = STATEMENT_SELECT;
+        return PREPARE_SUCCESS;
+    }
+
+    return PREPARE_UNRECOGNIZED_STATEMENT;
+}
+
+/**
+ * 执行语句
+ * @param statement 语句
+ */
+void execute_statement(Statement *statement)
+{
+    switch(statement->type)
+    {
+        case STATEMENT_INSERT:
+            printf("This is where we would do an insert.\n");
+            break;
+        case STATEMENT_SELECT:
+            printf("This is where we would do a select.\n");
+            break;
+    }
+}
+
+/**
  * 创建输入缓冲区
  * @return 输入缓冲区指针
  */
@@ -77,14 +166,29 @@ int main(int argc, char *argv[])
         print_prompt();                 // 打印提示符
         read_input(input_buffer);       // 读取输入
 
-        if(strcmp(input_buffer->buffer, ".exit") == 0)    // 如果输入为".exit"，则退出程序
+        if(input_buffer->buffer[0] == '.')
         {
-            close_input_buffer(input_buffer);    // 关闭输入缓冲区
-            exit(EXIT_SUCCESS);         // 退出程序
+            switch(do_meta_command(input_buffer))
+            {
+                case (META_COMMAND_SUCCESS):
+                    continue;
+                case (META_COMMAND_UNRECOGNIZED_COMMAND):
+                    printf("Unrecognized command '%s'.\n", input_buffer->buffer);    // 打印错误信息
+                    continue;
+            }
         }
-        else
+
+        Statement statement;
+        switch(prepare_statement(input_buffer, &statement))
         {
-            printf("Unrecognized command '%s'.\n", input_buffer->buffer);    // 打印未识别的命令
+            case (PREPARE_SUCCESS):
+                break;
+            case (PREPARE_UNRECOGNIZED_STATEMENT):
+                printf("Unrecognized keyword at start of '%s'.\n", input_buffer->buffer);    // 打印错误信息
+                continue;
         }
+
+        execute_statement(&statement);
+        printf("Executed.\n");
     }
 }
