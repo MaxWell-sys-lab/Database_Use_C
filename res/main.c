@@ -28,7 +28,7 @@ const uint32_t ROW_SIZE = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;     // 行的大
 
 const uint32_t PAGE_SIZE = 4096;                                        // 页的大小
 #define TABLE_MAX_PAGES 100                                             // 最大页数
-const uint32_t ROWS_PER_PAGE = PAGE_SIZE / size_of_attribute(Row, id);  // 每页的行数
+const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;                    // 每页的行数
 const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;        // 最大行数
 
 /**
@@ -184,6 +184,15 @@ PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement)
 }
 
 /**
+ * 打印行
+ * @param row 行
+ */
+void print_row(Row *row)
+{
+    printf("(%d, %s, %s)\n", row->id, row->username, row->email);
+}
+
+/**
  * 执行插入语句
  * @param statement 语句
  * @param table 表
@@ -215,7 +224,7 @@ ExecuteResult execute_select(Statement *statement, Table *table)
     for(uint32_t i = 0; i < table->num_rows; i++)
     {
         deserialize_row(row_slot(table, i), &row);
-        printf("%d %s %s\n", row.id, row.username, row.email);
+        print_row(&row);
     }
 
     return EXECUTE_SUCCESS;
