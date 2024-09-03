@@ -12,6 +12,7 @@
 
 /**
  * 存储行的结构体
+ * 行是数据库中的基本单元，每一行都有一个id、一个用户名和一个邮箱
  */
 typedef struct
 {
@@ -36,16 +37,18 @@ const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;        // 最�
 
 /**
  * 分页器
+ * 分页器是一个抽象层，用于管理文件的读写，以及缓存页
  */
 typedef struct
 {
     int file_descriptor;    // 文件描述符
     uint32_t file_length;   // 文件长度
-    void *pages[TABLE_MAX_PAGES];   // 页
+    void *pages[TABLE_MAX_PAGES];   // 页，用于缓存文件中的数据
 } Pager;
 
 /**
  * 表
+ * 表是一个抽象层，用于管理行
  */
 typedef struct
 {
@@ -54,7 +57,29 @@ typedef struct
 } Table;
 
 /**
+ * 游标
+ * 游标是一个抽象层，用于遍历表中的行
+ */
+typedef struct
+{
+    Table *table;                   // 表
+    uint32_t row_num;               // 行号
+    bool end_of_table;              // 是否到表尾
+} Cursor;
+
+/**
+ * 语句
+ * 语句用于表示用户输入的语句
+ */
+typedef struct
+{
+    StatementType type;             // 语句类型
+    Row row_to_insert;              // 插入的行，只有在语句类型为STATEMENT_INSERT时有效
+} Statement;
+
+/**
  * 输入缓冲区
+ * 输入缓冲区用于存储用户输入
  */
 typedef struct
 {
@@ -65,6 +90,7 @@ typedef struct
 
 /**
  * 元命令执行结果
+ * 元命令是一种特殊的命令，用于执行一些特殊的操作，比如退出程序
  */
 typedef enum
 {
@@ -74,6 +100,7 @@ typedef enum
 
 /**
  * 语句识别结果
+ * 语句识别结果用于表示语句的识别结果
  */
 typedef enum
 {
@@ -86,6 +113,7 @@ typedef enum
 
 /**
  * 语句类型
+ * 语句类型用于表示语句的类型
  */
 typedef enum
 {
@@ -94,16 +122,8 @@ typedef enum
 } StatementType;
 
 /**
- * 语句
- */
-typedef struct
-{
-    StatementType type;             // 语句类型
-    Row row_to_insert;              // 插入的行，只有在语句类型为STATEMENT_INSERT时有效
-} Statement;
-
-/**
  * 执行结果
+ * 执行结果用于表示执行语句的结果
  */
 typedef enum
 {
@@ -113,7 +133,6 @@ typedef enum
 
 void serialize_row(Row *source, void *destination);    // 序列化行
 void deserialize_row(void *source, Row *destination);  // 反序列化行
-void *row_slot(Table *table, uint32_t row_num);        // 获取某一行地址
 MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table);    // 语句处理
 PrepareResult prepare_insert(InputBuffer *input_buffer, Statement *statement);  // 准备插入语句
 PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement);    // 准备语句
@@ -130,6 +149,10 @@ InputBuffer *new_input_buffer();    // 创建输入缓冲区
 void print_prompt();    // 打印提示符
 void read_input(InputBuffer *input_buffer);    // 读取输入
 void close_input_buffer(InputBuffer *input_buffer);    // 关闭输入缓冲区
+Cursor *table_start(Table *table);    // 获取表的起始游标
+Cursor *table_end(Table *table);    // 获取表的结束游标
+void *cursor_value(Cursor *cursor);    // 获取游标指向的行地址
+void cursor_advance(Cursor *cursor);    // 游标前进
 
 /**
  * 序列化行
@@ -156,18 +179,31 @@ void deserialize_row(void *source, Row *destination)
 }
 
 /**
- * 获取某一行地址
- * @param table 表
- * @param row_num 行号
- * @return 该行地址
+ * 获取游标指向的行地址
+ * @param cursor 游标
+ * @return 行地址
  */
-void *row_slot(Table *table, uint32_t row_num)  
+void *cursor_value(Cursor *cursor)
 {
-    uint32_t page_num = row_num / ROWS_PER_PAGE;    // 页号
-    void *page = get_page(table->pager, page_num);  // 获取页
-    uint32_t row_offset = row_num % ROWS_PER_PAGE;                  // 行偏移量
-    uint32_t byte_offset = row_offset * ROW_SIZE;                   // 字节偏移量
+    uint32_t row_num = cursor->row_num;
+    uint32_t page_num = row_num / ROWS_PER_PAGE;
+    void *page = get_page(cursor->table->pager, page_num);
+    uint32_t row_offset = row_num % ROWS_PER_PAGE;
+    uint32_t byte_offset = row_offset * ROW_SIZE;
     return page + byte_offset;
+}
+
+/**
+ * 游标前进
+ * @param cursor 游标
+ */
+void cursor_advance(Cursor *cursor)
+{
+    cursor->row_num += 1;
+    if(cursor->row_num >= cursor->table->num_rows)
+    {
+        cursor->end_of_table = true;
+    }
 }
 
 /**
@@ -271,8 +307,11 @@ ExecuteResult execute_insert(Statement *statement, Table *table)
     }
 
     Row *row_to_insert = &(statement->row_to_insert);
-    serialize_row(row_to_insert, row_slot(table, table->num_rows));
+    Cursor *cursor = table_end(table);
+    serialize_row(row_to_insert, cursor_value(cursor));
     table->num_rows += 1;
+
+    free(cursor);
 
     return EXECUTE_SUCCESS;
 }
@@ -285,11 +324,14 @@ ExecuteResult execute_insert(Statement *statement, Table *table)
  */
 ExecuteResult execute_select(Statement *statement, Table *table)
 {
+    Cursor *cursor = table_start(table);
+
     Row row;
-    for(uint32_t i = 0; i < table->num_rows; i++)
+    while(cursor->end_of_table != true)
     {
-        deserialize_row(row_slot(table, i), &row);
+        deserialize_row(cursor_value(cursor), &row);
         print_row(&row);
+        cursor_advance(cursor);
     }
 
     return EXECUTE_SUCCESS;
@@ -538,6 +580,36 @@ void close_input_buffer(InputBuffer *input_buffer)
 }
 
 /**
+ * 获取表的起始游标
+ * @param table 表
+ * @return 游标
+ */
+Cursor *table_start(Table *table)
+{
+    Cursor *cursor = (Cursor *)malloc(sizeof(Cursor));    // 分配游标内存空间
+    cursor->table = table;    // 设置表
+    cursor->row_num = 0;    // 设置行号
+    cursor->end_of_table = (table->num_rows == 0);    // 设置是否到表尾
+
+    return cursor;    // 返回游标
+}
+
+/**
+ * 获取表的结束游标
+ * @param table 表
+ * @return 游标
+ */
+Cursor *table_end(Table *table)
+{
+    Cursor *cursor = (Cursor *)malloc(sizeof(Cursor));    // 分配游标内存空间
+    cursor->table = table;    // 设置表
+    cursor->row_num = table->num_rows;    // 设置行号
+    cursor->end_of_table = true;    // 设置是否到表尾
+
+    return cursor;    // 返回游标
+}
+
+/**
  * 主函数
  * @param argc 参数个数
  * @param argv 参数列表
@@ -560,23 +632,23 @@ int main(int argc, char *argv[])
         print_prompt();                 // 打印提示符
         read_input(input_buffer);       // 读取输入
 
-        if(input_buffer->buffer[0] == '.')
+        if(input_buffer->buffer[0] == '.')  // 判断是否为元命令
         {
             switch(do_meta_command(input_buffer, table))
             {
                 case (META_COMMAND_SUCCESS):
-                    continue;
+                    continue;   // 元命令执行成功，继续下一次循环，回到打印提示符
                 case (META_COMMAND_UNRECOGNIZED_COMMAND):
                     printf("Unrecognized command '%s'.\n", input_buffer->buffer);    // 打印错误信息
-                    continue;
+                    continue;   // 元命令未识别，继续下一次循环，回到打印提示符
             }
         }
 
         Statement statement;
-        switch(prepare_statement(input_buffer, &statement))
+        switch(prepare_statement(input_buffer, &statement))   // 判断语句类型
         {
             case (PREPARE_SUCCESS):
-                break;
+                break;  // 准备成功，继续下一步，退出switch
             case (PREPARE_NEGATIVE_ID):
                 printf("ID must be positive.\n");    // 打印错误信息
                 continue;
@@ -591,7 +663,7 @@ int main(int argc, char *argv[])
                 continue;
         }
 
-        switch(execute_statement(&statement, table))
+        switch(execute_statement(&statement, table))    // 执行语句
         {
             case (EXECUTE_SUCCESS):
                 printf("Executed.\n");    // 打印执行成功信息
