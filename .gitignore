@@ -1,2 +1,9 @@
-/.vscode
 /db
+res/main.dSYM/Contents/Resources/Relocations/aarch64/main.yml
+res/main.dSYM/Contents/Resources/DWARF/main
+res/main.dSYM/Contents/Info.plist
+db.dSYM/Contents/Info.plist
+db.dSYM/Contents/Resources/DWARF/db
+db.dSYM/Contents/Resources/Relocations/aarch64/db.yml
+res/main
+test.db

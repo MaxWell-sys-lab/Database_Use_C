@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "调试 C 程序 (CodeLLDB)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/db",
+            "cwd": "${workspaceFolder}",
+            "args": ["test.db"],
+            "stopOnEntry": false,
+            "externalConsole": false,
+            "lldbPath": "/usr/bin/lldb"  // 如果需要，指定LLDB路径
+        }
+    ]
+}

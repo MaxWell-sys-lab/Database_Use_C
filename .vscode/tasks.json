@@ -1,0 +1,33 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "clean",
+            "type": "shell",
+            "command": "rm",
+            "args": [
+                "${workspaceFolder}/test.db"  // 替换为你要删除的文件路径
+            ],
+            "problemMatcher": [],
+            "detail": "删除文件"
+        },
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+                "-g",      // 生成调试信息
+                "-O0",     // 禁用优化
+                "-o",      // 输出文件
+                "${workspaceFolder}/db", // 输出文件路径
+                "${workspaceFolder}/main.c"  // 输入文件路径
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"],
+            "detail": "编译C程序"
+        }
+    ]
+}

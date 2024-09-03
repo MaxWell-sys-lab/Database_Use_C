@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define COLUMN_USERNAME_SIZE 32     // 用户名的大小
 #define COLUMN_EMAIL_SIZE 255       // 邮箱的大小
@@ -32,12 +35,22 @@ const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;                    // 每�
 const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;        // 最大行数
 
 /**
+ * 分页器
+ */
+typedef struct
+{
+    int file_descriptor;    // 文件描述符
+    uint32_t file_length;   // 文件长度
+    void *pages[TABLE_MAX_PAGES];   // 页
+} Pager;
+
+/**
  * 表
  */
 typedef struct
 {
+    Pager *pager;                   // 分页器
     uint32_t num_rows;              // 行数
-    void *pages[TABLE_MAX_PAGES];   // 页
 } Table;
 
 /**
@@ -98,6 +111,26 @@ typedef enum
     EXECUTE_TABLE_FULL              // 表已满
 } ExecuteResult;
 
+void serialize_row(Row *source, void *destination);    // 序列化行
+void deserialize_row(void *source, Row *destination);  // 反序列化行
+void *row_slot(Table *table, uint32_t row_num);        // 获取某一行地址
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table);    // 语句处理
+PrepareResult prepare_insert(InputBuffer *input_buffer, Statement *statement);  // 准备插入语句
+PrepareResult prepare_statement(InputBuffer *input_buffer, Statement *statement);    // 准备语句
+void print_row(Row *row);    // 打印行
+ExecuteResult execute_insert(Statement *statement, Table *table);    // 执行插入语句
+ExecuteResult execute_select(Statement *statement, Table *table);    // 执行查询语句
+ExecuteResult execute_statement(Statement *statement, Table *table);    // 执行语句
+Table* db_open(const char *filename);    // 打开数据库
+Pager* pager_open(const char *filename);    // 打开分页器
+void pager_flush(Pager *pager, uint32_t page_num, uint32_t size);    // 刷新分页器
+void* get_page(Pager *pager, uint32_t page_num);    // 获取页
+void db_close(Table *table);    // 关闭数据库
+InputBuffer *new_input_buffer();    // 创建输入缓冲区
+void print_prompt();    // 打印提示符
+void read_input(InputBuffer *input_buffer);    // 读取输入
+void close_input_buffer(InputBuffer *input_buffer);    // 关闭输入缓冲区
+
 /**
  * 序列化行
  * @param source 源行
@@ -131,11 +164,7 @@ void deserialize_row(void *source, Row *destination)
 void *row_slot(Table *table, uint32_t row_num)  
 {
     uint32_t page_num = row_num / ROWS_PER_PAGE;    // 页号
-    void *page = table->pages[page_num];            // 页面起始地址
-    if(page == NULL)
-    {
-        page = table->pages[page_num] = malloc(PAGE_SIZE);  // 分配页的内存空间
-    }
+    void *page = get_page(table->pager, page_num);  // 获取页
     uint32_t row_offset = row_num % ROWS_PER_PAGE;                  // 行偏移量
     uint32_t byte_offset = row_offset * ROW_SIZE;                   // 字节偏移量
     return page + byte_offset;
@@ -144,12 +173,15 @@ void *row_slot(Table *table, uint32_t row_num)
 /**
  * 语句处理
  * @param input_buffer 输入缓冲区
+ * @param table 表
  * @return 元命令执行结果
  */
-MetaCommandResult do_meta_command(InputBuffer *input_buffer)
+MetaCommandResult do_meta_command(InputBuffer *input_buffer, Table *table)
 {
     if(strcmp(input_buffer->buffer, ".exit") == 0)
     {
+        close_input_buffer(input_buffer);
+        db_close(table);
         exit(EXIT_SUCCESS);
     }
     else
@@ -281,30 +313,177 @@ ExecuteResult execute_statement(Statement *statement, Table *table)
 }
 
 /**
- * 创建表
- * @return 表指针
+ * 打开数据库
+ * @param filename 文件名
+ * @return 表
  */
-Table *new_table()
+Table* db_open(const char *filename)
 {
-    Table *table = (Table *)malloc(sizeof(Table));
-    table->num_rows = 0;
-    for(uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
-    {
-        table->pages[i] = NULL;
-    }
+    Pager *pager = pager_open(filename);    // 打开分页器
+    uint32_t num_rows = pager->file_length / ROW_SIZE;    // 计算行数
+
+    Table* table = (Table *)malloc(sizeof(Table));    // 分配表内存空间
+    table->pager = pager;    // 设置分页器
+    table->num_rows = num_rows;    // 设置行数
+
     return table;
 }
 
 /**
- * 释放表
+ * 打开分页器
+ * @param filename 文件名
+ * @return 分页器
+ */
+Pager* pager_open(const char *filename)
+{
+    int fd = open(filename, O_RDWR | O_CREAT, S_IWUSR | S_IRUSR);    // 打开文件
+    if(fd == -1)
+    {
+        printf("Unable to open file\n");    // 打印错误信息
+        exit(EXIT_FAILURE);    // 退出程序
+    }
+
+    off_t file_length = lseek(fd, 0, SEEK_END);    // 获取文件长度
+
+    Pager *pager = (Pager *)malloc(sizeof(Pager));    // 分配分页器内存空间
+    pager->file_descriptor = fd;    // 设置文件描述符
+    pager->file_length = file_length;    // 设置文件长度
+
+    for(uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
+    {
+        pager->pages[i] = NULL;
+    }
+
+    return pager;
+}
+
+/**
+ * 刷新分页器
+ * @param pager 分页器
+ * @param page_num 页号
+ */
+void pager_flush(Pager *pager, uint32_t page_num, uint32_t size)
+{
+    if(pager->pages[page_num] == NULL)
+    {
+        printf("Tried to flush null page\n");
+        exit(EXIT_FAILURE);
+    }
+
+    off_t offset = lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);
+    if(offset == -1)
+    {
+        printf("Error seeking: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+
+    ssize_t bytes_written = write(pager->file_descriptor, pager->pages[page_num], size);
+    if(bytes_written == -1)
+    {
+        printf("Error writing: %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+}
+
+/**
+ * 获取页
+ * @param pager 分页器
+ * @param page_num 页号
+ * @return 页
+ */
+void* get_page(Pager *pager, uint32_t page_num)
+{
+    if(page_num > TABLE_MAX_PAGES)
+    {
+        printf("Tried to fetch page number out of bounds. %d > %d\n", page_num, TABLE_MAX_PAGES);    // 打印错误信息
+        exit(EXIT_FAILURE);    // 退出程序
+    }
+
+    if(pager->pages[page_num] == NULL)
+    {
+        // 缓存未命中，分配内存空间
+        void *page = malloc(PAGE_SIZE);    // 分配页内存空间
+        uint32_t num_pages = pager->file_length / PAGE_SIZE;    // 计算页数
+
+        // 为了保证文件长度是PAGE_SIZE的整数倍
+        if(pager->file_length % PAGE_SIZE)
+        {
+            num_pages += 1;
+        }
+
+        if(page_num <= num_pages)
+        {
+            lseek(pager->file_descriptor, page_num * PAGE_SIZE, SEEK_SET);    // 设置文件偏移量
+            ssize_t bytes_read = read(pager->file_descriptor, page, PAGE_SIZE);    // 读取文件
+            if(bytes_read == -1)
+            {
+                printf("Error reading file: %d\n", errno);    // 打印错误信息
+                exit(EXIT_FAILURE);    // 退出程序
+            }
+        }
+
+        pager->pages[page_num] = page;
+    }
+
+    return pager->pages[page_num];
+}
+
+/**
+ * 关闭数据库
  * @param table 表
  */
-void free_table(Table *table)
+void db_close(Table *table)
 {
-    for(int i = 0; table->pages[i]; i++)
+    Pager *pager = table->pager;
+    uint32_t num_full_pages = table->num_rows / ROWS_PER_PAGE;
+
+    // 刷新并释放所有已使用的页
+    for(uint32_t i = 0; i < num_full_pages; i++)
     {
-        free(table->pages[i]);
+        if(pager->pages[i] == NULL)
+        {
+            continue;
+        }
+
+        pager_flush(pager, i, PAGE_SIZE);
+        free(pager->pages[i]);
+        pager->pages[i] = NULL;
     }
+
+    // 刷新并释放额外的页
+    uint32_t num_additional_rows = table->num_rows % ROWS_PER_PAGE;
+    if(num_additional_rows > 0)
+    {
+        uint32_t page_num = num_full_pages;
+        if(pager->pages[page_num] != NULL)
+        {
+            pager_flush(pager, page_num, num_additional_rows * ROW_SIZE);
+            free(pager->pages[page_num]);
+            pager->pages[page_num] = NULL;
+        }
+    }
+
+    // 关闭文件描述符
+    int result = close(pager->file_descriptor);
+    if(result == -1)
+    {
+        printf("Error closing db file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // 释放所有页的内存空间
+    for(uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
+    {
+        void *page = pager->pages[i];
+        if(page)
+        {
+            free(page);
+            pager->pages[i] = NULL;
+        }
+    }
+
+    // 释放分页器和表的内存空间
+    free(pager);
     free(table);
 }
 
@@ -365,7 +544,15 @@ void close_input_buffer(InputBuffer *input_buffer)
  */
 int main(int argc, char *argv[])
 {
-    Table *table = new_table();    // 创建表
+    if(argc < 2)
+    {
+        printf("Must supply a database filename.\n");    // 打印错误信息
+        exit(EXIT_FAILURE);    // 退出程序
+    }
+
+    char *filename = argv[1];    // 获取数据库文件名
+    Table *table = db_open(filename);    // 打开数据库
+
     InputBuffer *input_buffer = new_input_buffer();    // 创建输入缓冲区
 
     while(true)
@@ -375,7 +562,7 @@ int main(int argc, char *argv[])
 
         if(input_buffer->buffer[0] == '.')
         {
-            switch(do_meta_command(input_buffer))
+            switch(do_meta_command(input_buffer, table))
             {
                 case (META_COMMAND_SUCCESS):
                     continue;
