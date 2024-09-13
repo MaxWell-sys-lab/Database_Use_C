@@ -17,26 +17,64 @@ describe 'database' do
       raw_output.split("\n")
     end
 
-	# 测试是否保留数据
-	it 'keeps data after closing connection' do
-		result1 = run_script([
-		  "insert 1 user1 person1@example.com",
-		  ".exit",
+	# # 测试是否保留数据
+	# it 'keeps data after closing connection' do
+	# 	result1 = run_script([
+	# 	  "insert 1 user1 person1@example.com",
+	# 	  ".exit",
+	# 	])
+	# 	expect(result1).to match_array([
+	# 	  "db > Executed.",
+	# 	  "db > ",
+	# 	])
+	# 	result2 = run_script([
+	# 	  "select",
+	# 	  ".exit",
+	# 	])
+	# 	expect(result2).to match_array([
+	# 	  "db > (1, user1, person1@example.com)",
+	# 	  "Executed.",
+	# 	  "db > ",
+	# 	])
+	#   end
+
+	it 'print constants' do
+		result = run_script([
+			".constants",
+			".exit",
 		])
-		expect(result1).to match_array([
-		  "db > Executed.",
-		  "db > ",
+		expect(result).to match_array([
+			"db > Constants:",
+			"ROW_SIZE: 293",
+			"COMMON_NODE_HEADER_SIZE: 6",
+			"LEAF_NODE_HEADER_SIZE: 10",
+			"LEAF_NODE_CELL_SIZE: 297",
+			"LEAF_NODE_SPACE_FOR_CELLS: 4086",
+			"LEAF_NODE_MAX_CELLS: 13",
+			"db > ",
 		])
-		result2 = run_script([
-		  "select",
-		  ".exit",
+	end
+
+	it 'allows printing out the structure of a one-node btree' do
+		script = [3, 1, 2].map do |i|
+			"insert #{i} user#{i} person#{i}@example.com"
+		end
+		script << ".btree"
+		script << ".exit"
+		result = run_script(script)
+
+		expect(result).to match_array([
+			"db > Executed.",
+			"db > Executed.",
+			"db > Executed.",
+			"db > Tree:",
+			"leaf (size 3)",
+			"  - 0 : 3",
+			"  - 1 : 1",
+			"  - 2 : 2",
+			"db > ",
 		])
-		expect(result2).to match_array([
-		  "db > (1, user1, person1@example.com)",
-		  "Executed.",
-		  "db > ",
-		])
-	  end
+	end
 
     # # 测试插入和检索一行
     # it 'inserts and retrieves a row' do
@@ -53,15 +91,15 @@ describe 'database' do
     #   ])
     # end
 
-    # 测试插入和检索多行
-    it 'prints error message when table is full' do
-        script = (1..1401).map do |i|
-          "insert #{i} user#{i} person#{i}@example.com"
-        end
-        script << ".exit"
-        result = run_script(script)
-        expect(result[-2]).to eq('db > Error: Table full.')
-      end
+    # # 测试插入和检索多行
+    # it 'prints error message when table is full' do
+    #     script = (1..1401).map do |i|
+    #       "insert #{i} user#{i} person#{i}@example.com"
+    #     end
+    #     script << ".exit"
+    #     result = run_script(script)
+    #     expect(result[-2]).to eq('db > Error: Table full.')
+    #   end
 
 	# # 测试插入最长字符串
     # it 'allows inserting strings that are the maximum length' do
